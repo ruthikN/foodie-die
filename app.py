@@ -1,74 +1,200 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image
 import requests
-import json  # Add this import
+import pandas as pd
+import plotly.express as px
+from PIL import Image
+from datetime import datetime
+import sqlite3
+import json
 
-# Configure Gemini
+# --------------------------
+# Configuration
+# --------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+NUTRITIONIX_HEADERS = {
+    "x-app-id": st.secrets["NUTRITIONIX_APP_ID"],
+    "x-app-key": st.secrets["NUTRITIONIX_API_KEY"],
+    "Content-Type": "application/json"
+}
 
+# --------------------------
+# Database Setup
+# --------------------------
+conn = sqlite3.connect('foodie_die.db')
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users 
+            (id TEXT PRIMARY KEY, created TIMESTAMP, goals TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS meals 
+            (id TEXT PRIMARY KEY, user_id TEXT, timestamp TIMESTAMP, 
+             image BLOB, analysis TEXT)''')
+
+# --------------------------
+# AI Core
+# --------------------------
 def analyze_food(image):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content([
-        """Identify food items and estimate quantities in this image. 
-        Return valid JSON format only: 
-        {"items": [{"name": "item1", "quantity": number, "unit": "unit1"}, ...]}""",
-        Image.open(image)
-    ])
-    
-    # Clean response text
-    response_text = response.text.replace('```json', '').replace('```', '').strip()
+    prompt = """Analyze this food image and return JSON with:
+    - items: list of {name, quantity, unit, estimated_calories}
+    - health_rating: 1-5 scale
+    - alternative_suggestions: [healthier alternatives]
+    Format: {analysis: {items: [...], ...}}"""
     
     try:
-        return json.loads(response_text)  # Use json instead of eval
-    except json.JSONDecodeError as e:
-        st.error(f"Failed to parse response: {e}\nResponse was: {response_text}")
+        response = model.generate_content([prompt, Image.open(image)])
+        return clean_and_parse(response.text)
+    except Exception as e:
+        st.error(f"AI Analysis Failed: {str(e)}")
         return None
 
-def get_nutrition(items):
-    if not items:
-        return []
-    
-    nutrition = []
-    for item in items:
-        try:
-            response = requests.post(
-                "https://trackapi.nutritionix.com/v2/natural/nutrients",
-                headers={
-                    "x-app-id": st.secrets["NUTRITIONIX_APP_ID"],
-                    "x-app-key": st.secrets["NUTRITIONIX_API_KEY"],
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "query": f"{item['quantity']}{item['unit']} {item['name']}"
-                }
-            )
-            if response.status_code == 200:
-                nutrition.append(response.json()['foods'][0])
-        except Exception as e:
-            st.error(f"Error getting nutrition for {item['name']}: {str(e)}")
-    
-    return nutrition
+# --------------------------
+# Nutrition Engine
+# --------------------------
+def get_deep_nutrition(item):
+    response = requests.post(
+        "https://trackapi.nutritionix.com/v2/natural/nutrients",
+        headers=NUTRITIONIX_HEADERS,
+        json={"query": f"{item['quantity']}{item['unit']} {item['name']}"}
+    )
+    return response.json().get('foods', [{}])[0] if response.ok else {}
 
-# Streamlit UI
-st.title("🍎 Foodie Die - AI Nutrition Analyzer")
-upload = st.file_uploader("Upload Food Photo", type=["jpg", "png", "jpeg"])
+# --------------------------
+# UI Components
+# --------------------------
+def neo_metric(label, value, delta=None):
+    st.markdown(f"""
+    <div class="neo-card">
+        <div class="neo-label">{label}</div>
+        <div class="neo-value">{value}</div>
+        {f'<div class="neo-delta">{delta}</div>' if delta else ""}
+    </div>
+    """, unsafe_allow_html=True)
 
-if upload:
-    st.image(upload, width=300)
-    with st.spinner("Analyzing..."):
-        food_data = analyze_food(upload)
+def radar_chart(nutrition):
+    df = pd.DataFrame(dict(
+        Nutrient=["Calories", "Protein", "Carbs", "Fat", "Fiber"],
+        Value=[
+            nutrition.get('nf_calories', 0),
+            nutrition.get('nf_protein', 0),
+            nutrition.get('nf_total_carbohydrate', 0),
+            nutrition.get('nf_total_fat', 0),
+            nutrition.get('nf_dietary_fiber', 0)
+        ]
+    ))
+    fig = px.line_polar(df, r='Value', theta='Nutrient', line_close=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------
+# Main Interface
+# --------------------------
+st.set_page_config(
+    page_title="Foodie Die Pro", 
+    page_icon="🥗", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #ffffff;
+}
+
+.neo-card {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 15px;
+    padding: 1.5rem;
+    margin: 1rem;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: transform 0.3s ease;
+}
+
+.neo-card:hover {
+    transform: translateY(-5px);
+}
+
+.stPlotlyChart {
+    border-radius: 15px;
+    background: rgba(0,0,0,0.2) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --------------------------
+# User Flow
+# --------------------------
+with st.sidebar:
+    st.title("⚙️ Profile Settings")
+    user_id = st.text_input("Unique ID", "user_123")
+    goals = st.multiselect("Diet Goals", [
+        "Weight Loss", "Muscle Gain", "Ketogenic", 
+        "Plant-Based", "Low Sodium"
+    ])
+    st.session_state.goals = goals
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.title("🥗 Foodie Die Pro")
+    uploaded_file = st.file_uploader("", type=["jpg", "png", "jpeg"], 
+                                   help="Snap or upload your meal")
+
+with col2:
+    if uploaded_file:
+        st.image(uploaded_file, use_column_width=True, 
+                caption="Your Meal Analysis Preview")
         
-        if food_data and "items" in food_data:
-            nutrition = get_nutrition(food_data["items"])
+        with st.spinner("🧠 Analyzing with Quantum Nutrition AI..."):
+            analysis = analyze_food(uploaded_file)
             
-            st.subheader("Nutrition Facts")
-            if nutrition:
-                for item in nutrition:
-                    st.write(f"### {item['food_name']}")
-                    st.metric("Calories", f"{item['nf_calories']} kcal")
-                    st.write(f"Protein: {item['nf_protein']}g | Carbs: {item['nf_total_carbohydrate']}g | Fat: {item['nf_total_fat']}g")
-            else:
-                st.warning("No nutrition data found")
-        else:
-            st.error("Failed to analyze food items")
+            if analysis:
+                st.session_state.analysis = analysis
+                nutrition_data = [get_deep_nutrition(item) 
+                                 for item in analysis.get('items', [])]
+                
+                # Save to database
+                c.execute('''INSERT INTO meals 
+                            (id, user_id, timestamp, image, analysis)
+                            VALUES (?, ?, ?, ?, ?)''',
+                         (str(datetime.now()), user_id, 
+                         datetime.now(), uploaded_file.getvalue(), 
+                         json.dumps(analysis)))
+                conn.commit()
+
+                # Display Results
+                st.success("Analysis Complete!")
+                
+                # Nutrition Dashboard
+                with st.expander("🔍 Detailed Nutrition Breakdown", expanded=True):
+                    cols = st.columns(3)
+                    cols[0].metric("Health Score", 
+                                   f"{analysis.get('health_rating', 0)}/5")
+                    cols[1].metric("Total Calories", 
+                                   sum(item['estimated_calories'] 
+                                   for item in analysis.get('items', [])))
+                    cols[2].metric("Food Groups", 
+                                   len(analysis.get('items', [])))
+                    
+                    radar_chart(nutrition_data[0] if nutrition_data else {})
+                
+                # Alternative Suggestions
+                st.subheader("🌟 Healthier Alternatives")
+                for suggestion in analysis.get('alternative_suggestions', []):
+                    st.markdown(f"- {suggestion}")
+
+# --------------------------
+# Meal History
+# --------------------------
+st.sidebar.subheader("📅 Meal Timeline")
+history = c.execute('''SELECT timestamp, analysis FROM meals 
+                     WHERE user_id = ? ORDER BY timestamp DESC''', 
+                  (user_id,)).fetchall()
+
+for meal in history:
+    with st.sidebar.expander(f"Meal @ {meal[0]}"):
+        analysis = json.loads(meal[1])
+        st.write(f"Health Score: {analysis.get('health_rating', 0)}/5")
+        st.write(f"Items: {len(analysis.get('items', []))}")
