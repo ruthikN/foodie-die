@@ -7,8 +7,6 @@ from PIL import Image
 from datetime import datetime
 import sqlite3
 import json
-from streamlit_extras.colored_header import colored_header
-from streamlit_extras.stylable_container import stylable_container
 
 # --------------------------
 # Configuration
@@ -33,7 +31,6 @@ c.execute('''CREATE TABLE IF NOT EXISTS meals
 # Core Functions
 # --------------------------
 def clean_and_parse(response_text):
-    """Clean and parse Gemini response"""
     try:
         cleaned = response_text.replace('```json', '').replace('```', '').strip()
         return json.loads(cleaned)
@@ -42,7 +39,6 @@ def clean_and_parse(response_text):
         return None
 
 def analyze_food(image):
-    """Analyze food image using Gemini"""
     model = genai.GenerativeModel('gemini-1.5-flash')
     prompt = """Analyze this food image and return JSON with:
     - main_food: primary food name
@@ -59,7 +55,6 @@ def analyze_food(image):
         return None
 
 def get_nutrition_data(item):
-    """Get detailed nutrition from Nutritionix"""
     try:
         response = requests.post(
             "https://trackapi.nutritionix.com/v2/natural/nutrients",
@@ -72,48 +67,34 @@ def get_nutrition_data(item):
         return {}
 
 # --------------------------
-# UI Components
+# Custom Styled Components
 # --------------------------
-def nutrient_card(label, value, unit="", dv=0, color="#FF4B4B"):
-    """Styled nutrient display card"""
-    with stylable_container(
-        key=f"nutrient_{label}",
-        css_styles=f"""
-            {{
-                background: {color}22;
-                border-radius: 10px;
-                padding: 1rem;
-                margin: 0.5rem;
-                border-left: 4px solid {color};
-            }}
-        """
-    ):
+def styled_container():
+    return st.container(
+        border=True,
+        border_color="#e0e0e0",
+        padding=20,
+        margin=10
+    )
+
+def nutrient_card(label, value, unit=""):
+    with st.container():
         st.markdown(f"""
-        <div style="padding: 0.5rem;">
-            <div style="font-size: 0.8rem; color: {color};">
-                {label.upper()}
+        <div style="
+            padding: 1rem;
+            border-radius: 10px;
+            background: #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: 0.5rem 0;
+        ">
+            <div style="font-size: 0.9rem; color: #666;">
+                {label}
             </div>
-            <div style="font-size: 1.5rem; font-weight: bold;">
+            <div style="font-size: 1.5rem; font-weight: bold; color: #2c3e50;">
                 {value}{unit}
             </div>
-            {f'<div style="font-size: 0.75rem; color: #666;">{dv}% DV</div>' if dv else ""}
         </div>
         """, unsafe_allow_html=True)
-
-def create_macronutrient_chart(data):
-    """Interactive macronutrient chart"""
-    df = pd.DataFrame({
-        'Macro': ['Protein', 'Carbs', 'Fat'],
-        'Value': [
-            data.get('nf_protein', 0),
-            data.get('nf_total_carbohydrate', 0),
-            data.get('nf_total_fat', 0)
-        ]
-    })
-    fig = px.bar(df, x='Macro', y='Value', color='Macro',
-                 color_discrete_sequence=['#00CC96', '#FFA15A', '#EF553B'])
-    fig.update_layout(showlegend=False)
-    return fig
 
 # --------------------------
 # Main Interface
@@ -132,17 +113,12 @@ st.markdown("""
     background: #f8f9fa;
 }
 
-.food-header {
-    font-size: 2.5rem !important;
-    color: #2c3e50 !important;
-    margin-bottom: 1rem !important;
+.st-emotion-cache-1kyxreq {
+    justify-content: center;
 }
 
-.nutrition-grid {
-    background: white;
+.st-emotion-cache-1v0mbdj {
     border-radius: 15px;
-    padding: 2rem;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -157,20 +133,13 @@ if uploaded_file:
     col1, col2 = st.columns([1, 2])
     
     with col1:
-        st.image(uploaded_file, use_container_width=True, caption="Uploaded Image")
+        st.image(uploaded_file, use_container_width=True)
 
     with col2:
         with st.spinner("🔍 Analyzing your meal..."):
             analysis = analyze_food(uploaded_file)
             if analysis and 'analysis' in analysis:
-                main_food = analysis['analysis'].get('main_food', 'Unknown Food')
-                colored_header(
-                    label=f"Detected Food: {main_food}",
-                    description="",
-                    color_name="blue-70"
-                )
-                
-                # Save analysis to database
+                # Save analysis
                 c.execute('''INSERT INTO meals 
                           (id, timestamp, image, analysis)
                           VALUES (?, ?, ?, ?)''',
@@ -182,48 +151,46 @@ if uploaded_file:
                 nutrition_data = [get_nutrition_data(item) 
                                 for item in analysis['analysis'].get('items', [])]
 
-                # Main Nutrition Dashboard
-                with st.container():
-                    st.subheader("📊 Nutritional Breakdown")
+                # Display Results
+                with styled_container():
+                    st.subheader(f"🍴 {analysis['analysis'].get('main_food', 'Unknown Food')}")
                     
-                    # Macronutrient Row
                     cols = st.columns(3)
-                    cols[0].metric("Calories", 
-                                  f"{sum(item.get('nf_calories', 0) for item in nutrition_data)} kcal")
-                    cols[1].metric("Protein", 
-                                  f"{sum(item.get('nf_protein', 0) for item in nutrition_data)}g")
-                    cols[2].metric("Carbs", 
-                                  f"{sum(item.get('nf_total_carbohydrate', 0) for item in nutrition_data)}g")
+                    cols[0].metric("Health Score", 
+                                  f"{analysis['analysis'].get('health_rating', 0)}/5")
+                    cols[1].metric("Total Calories", 
+                                  sum(item.get('nf_calories', 0) for item in nutrition_data))
+                    cols[2].metric("Food Components", 
+                                  len(analysis['analysis'].get('items', [])))
 
-                    # Detailed Nutrition Tabs
-                    tab1, tab2, tab3 = st.tabs(["Macronutrients", "Micronutrients", "Health Insights"])
+                # Nutrition Breakdown
+                with styled_container():
+                    st.subheader("📊 Nutritional Breakdown")
+                    tab1, tab2 = st.tabs(["Macronutrients", "Micronutrients"])
                     
                     with tab1:
-                        st.plotly_chart(create_macronutrient_chart(nutrition_data[0]), 
-                                      use_container_width=True)
-                        
+                        cols = st.columns(3)
+                        cols[0].metric("Protein", f"{sum(item.get('nf_protein', 0) for item in nutrition_data)}g")
+                        cols[1].metric("Carbs", f"{sum(item.get('nf_total_carbohydrate', 0) for item in nutrition_data)}g")
+                        cols[2].metric("Fat", f"{sum(item.get('nf_total_fat', 0) for item in nutrition_data)}g")
+                    
                     with tab2:
-                        st.subheader("Vitamins & Minerals")
                         grid = st.columns(4)
-                        micronutrients = [
-                            ('Calcium', 'nf_calcium_dv', '%', '#00CC96'),
-                            ('Iron', 'nf_iron_dv', '%', '#EF553B'),
-                            ('Potassium', 'nf_potassium', 'mg', '#AB63FA'),
-                            ('Vitamin C', 'nf_vitamin_c_dv', '%', '#19D3F3')
+                        nutrients = [
+                            ('Calcium', 'nf_calcium_dv', '%'),
+                            ('Iron', 'nf_iron_dv', '%'),
+                            ('Potassium', 'nf_potassium', 'mg'),
+                            ('Vitamin C', 'nf_vitamin_c_dv', '%')
                         ]
-                        for idx, (name, key, unit, color) in enumerate(micronutrients):
+                        for idx, (name, key, unit) in enumerate(nutrients):
                             with grid[idx % 4]:
                                 nutrient_card(name, 
-                                            nutrition_data[0].get(key, 0), 
-                                            unit, color=color)
-                    
-                    with tab3:
-                        st.subheader("🥦 Health Recommendations")
-                        st.write(f"**Health Rating:** {analysis['analysis'].get('health_rating', 0)}/5")
-                        
-                        st.subheader("🌟 Healthier Alternatives")
-                        for suggestion in analysis['analysis'].get('alternative_suggestions', []):
-                            st.markdown(f"- {suggestion}")
+                                             sum(item.get(key, 0) for item in nutrition_data),
+                                             unit)
 
-
+                # Recommendations
+                with styled_container():
+                    st.subheader("🌟 Healthier Alternatives")
+                    for suggestion in analysis['analysis'].get('alternative_suggestions', []):
+                        st.markdown(f"- {suggestion}")
 
