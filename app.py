@@ -7,7 +7,7 @@ import requests
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 def analyze_food(image):
-    model = genai.GenerativeModel('gemini-pro-vision')
+    model = genai.GenerativeModel('gemini-1.0-pro-vision-latest')
     response = model.generate_content([
         "Identify food items and estimate quantities in this image. Return as: {items: [{name, quantity, unit}]}",
         Image.open(image)
