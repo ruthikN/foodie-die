@@ -1,5 +1,5 @@
 """
-NUTRISCALE PRO - AI-Powered Nutrition Analysis Platform
+NUTRIVERSE PRO - AI-Powered Nutrition Analysis Platform
 """
 
 import streamlit as st
@@ -13,7 +13,15 @@ from PIL import Image
 import pandas as pd
 import plotly.express as px
 import hashlib
-import os
+
+# ======================
+# Initial Configuration (Must be first)
+# ======================
+st.set_page_config(
+    page_title="Nutriverse Pro",
+    page_icon="🥗",
+    layout="wide"
+)
 
 # ======================
 # Configuration Layer
@@ -24,7 +32,6 @@ class AppConfig:
         self.nutritionix_id = st.secrets["NUTRITIONIX_APP_ID"]
         self.nutritionix_key = st.secrets["NUTRITIONIX_API_KEY"]
         self.db_path = "nutriverse.db"
-        self.analytics_enabled = True
 
 config = AppConfig()
 
@@ -236,13 +243,6 @@ def main():
     # User Session Management
     if 'user_id' not in st.session_state:
         st.session_state.user_id = db.create_user_session()
-    
-    # App Interface
-    st.set_page_config(
-        page_title="Nutriverse Pro",
-        page_icon="🥗",
-        layout="wide"
-    )
     
     st.title("🍎 Nutriverse - AI Nutrition Analyst")
     uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "png", "jpeg"])
