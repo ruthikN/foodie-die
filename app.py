@@ -18,14 +18,18 @@ def get_nutrition(items):
     nutrition = []
     for item in items:
         response = requests.post(
-            "https://api.edamam.com/api/nutrition-data",
-            params={
-                "app_id": st.secrets["EDAMAM_APP_ID"],
-                "app_key": st.secrets["EDAMAM_APP_KEY"],
-                "ingr": f"{item['quantity']} {item['unit']} {item['name']}"
+            "https://trackapi.nutritionix.com/v2/natural/nutrients",
+            headers={
+                "x-app-id": st.secrets["NUTRITIONIX_APP_ID"],
+                "x-app-key": st.secrets["NUTRITIONIX_API_KEY"],
+                "Content-Type": "application/json"
+            },
+            json={
+                "query": f"{item['quantity']}{item['unit']} {item['name']}"
             }
         )
-        nutrition.append(response.json())
+        if response.status_code == 200:
+            nutrition.append(response.json()['foods'][0])
     return nutrition
 
 # Streamlit UI
@@ -39,4 +43,7 @@ if upload:
         nutrition = get_nutrition(eval(food_data)["items"])
     
     st.subheader("Nutrition Facts")
-    st.json(nutrition)
+    for item in nutrition:
+        st.write(f"### {item['food_name']}")
+        st.metric("Calories", f"{item['nf_calories']} kcal")
+        st.write(f"Protein: {item['nf_protein']}g | Carbs: {item['nf_total_carbohydrate']}g | Fat: {item['nf_total_fat']}g")
