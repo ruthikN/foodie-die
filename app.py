@@ -30,36 +30,50 @@ c.execute('''CREATE TABLE IF NOT EXISTS meals
              image BLOB, analysis TEXT)''')
 
 # --------------------------
-# AI Core
+# AI Core Functions
 # --------------------------
+def clean_and_parse(response_text):
+    """Clean and parse Gemini response with error handling"""
+    try:
+        # Remove markdown code blocks
+        cleaned = response_text.replace('```json', '').replace('```', '').strip()
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to parse AI response: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Unexpected error: {str(e)}")
+        return None
+
 def analyze_food(image):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = """Analyze this food image and return JSON with:
-    - items: list of {name, quantity, unit, estimated_calories}
-    - health_rating: 1-5 scale
-    - alternative_suggestions: [healthier alternatives]
-    Format: {analysis: {items: [...], ...}}"""
-    
-    try:
-        response = model.generate_content([prompt, Image.open(image)])
-        return clean_and_parse(response.text)
-    except Exception as e:
-        st.error(f"AI Analysis Failed: {str(e)}")
-        return None
+    response = model.generate_content([
+        """Analyze this food image and return JSON with:
+        - items: list of {name, quantity, unit, estimated_calories}
+        - health_rating: 1-5 scale
+        - alternative_suggestions: [healthier alternatives]
+        Format: {analysis: {items: [...], ...}}""",
+        Image.open(image)
+    ])
+    return clean_and_parse(response.text)
 
 # --------------------------
 # Nutrition Engine
 # --------------------------
 def get_deep_nutrition(item):
-    response = requests.post(
-        "https://trackapi.nutritionix.com/v2/natural/nutrients",
-        headers=NUTRITIONIX_HEADERS,
-        json={"query": f"{item['quantity']}{item['unit']} {item['name']}"}
-    )
-    return response.json().get('foods', [{}])[0] if response.ok else {}
+    try:
+        response = requests.post(
+            "https://trackapi.nutritionix.com/v2/natural/nutrients",
+            headers=NUTRITIONIX_HEADERS,
+            json={"query": f"{item['quantity']}{item['unit']} {item['name']}"}
+        )
+        return response.json().get('foods', [{}])[0] if response.ok else {}
+    except Exception as e:
+        st.error(f"Nutrition API Error: {str(e)}")
+        return {}
 
 # --------------------------
-# UI Components
+# Enhanced UI Components
 # --------------------------
 def neo_metric(label, value, delta=None):
     st.markdown(f"""
@@ -112,10 +126,6 @@ st.markdown("""
     transition: transform 0.3s ease;
 }
 
-.neo-card:hover {
-    transform: translateY(-5px);
-}
-
 .stPlotlyChart {
     border-radius: 15px;
     background: rgba(0,0,0,0.2) !important;
@@ -144,16 +154,15 @@ with col1:
 
 with col2:
     if uploaded_file:
-        st.image(uploaded_file, use_column_width=True, 
+        st.image(uploaded_file, use_container_width=True, 
                 caption="Your Meal Analysis Preview")
         
         with st.spinner("🧠 Analyzing with Quantum Nutrition AI..."):
             analysis = analyze_food(uploaded_file)
             
-            if analysis:
-                st.session_state.analysis = analysis
+            if analysis and 'analysis' in analysis:
                 nutrition_data = [get_deep_nutrition(item) 
-                                 for item in analysis.get('items', [])]
+                                 for item in analysis['analysis'].get('items', [])]
                 
                 # Save to database
                 c.execute('''INSERT INTO meals 
@@ -171,30 +180,18 @@ with col2:
                 with st.expander("🔍 Detailed Nutrition Breakdown", expanded=True):
                     cols = st.columns(3)
                     cols[0].metric("Health Score", 
-                                   f"{analysis.get('health_rating', 0)}/5")
+                                  f"{analysis['analysis'].get('health_rating', 0)}/5")
                     cols[1].metric("Total Calories", 
-                                   sum(item['estimated_calories'] 
-                                   for item in analysis.get('items', [])))
+                                  sum(item['estimated_calories'] 
+                                  for item in analysis['analysis'].get('items', [])))
                     cols[2].metric("Food Groups", 
-                                   len(analysis.get('items', [])))
+                                  len(analysis['analysis'].get('items', [])))
                     
-                    radar_chart(nutrition_data[0] if nutrition_data else {})
+                    if nutrition_data:
+                        radar_chart(nutrition_data[0])
                 
                 # Alternative Suggestions
                 st.subheader("🌟 Healthier Alternatives")
-                for suggestion in analysis.get('alternative_suggestions', []):
+                for suggestion in analysis['analysis'].get('alternative_suggestions', []):
                     st.markdown(f"- {suggestion}")
 
-# --------------------------
-# Meal History
-# --------------------------
-st.sidebar.subheader("📅 Meal Timeline")
-history = c.execute('''SELECT timestamp, analysis FROM meals 
-                     WHERE user_id = ? ORDER BY timestamp DESC''', 
-                  (user_id,)).fetchall()
-
-for meal in history:
-    with st.sidebar.expander(f"Meal @ {meal[0]}"):
-        analysis = json.loads(meal[1])
-        st.write(f"Health Score: {analysis.get('health_rating', 0)}/5")
-        st.write(f"Items: {len(analysis.get('items', []))}")
