@@ -19,13 +19,15 @@ NUTRITIONIX_HEADERS = {
 }
 
 # --------------------------
-# Database Setup
+# Database Setup (Updated for Python 3.12)
 # --------------------------
-conn = sqlite3.connect('foodie_die.db')
+conn = sqlite3.connect('foodie_die.db', detect_types=sqlite3.PARSE_DECLTYPES)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS meals 
-            (id TEXT PRIMARY KEY, timestamp TIMESTAMP, 
-             image BLOB, analysis TEXT)''')
+            (id TEXT PRIMARY KEY, 
+             timestamp TIMESTAMP,
+             image BLOB, 
+             analysis TEXT)''')
 
 # --------------------------
 # Core Functions
@@ -70,31 +72,26 @@ def get_nutrition_data(item):
 # Custom Styled Components
 # --------------------------
 def styled_container():
-    return st.container(
-        border=True,
-        border_color="#e0e0e0",
-        padding=20,
-        margin=10
-    )
+    return st.container()
 
 def nutrient_card(label, value, unit=""):
-    with st.container():
-        st.markdown(f"""
-        <div style="
-            padding: 1rem;
-            border-radius: 10px;
-            background: #ffffff;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin: 0.5rem 0;
-        ">
-            <div style="font-size: 0.9rem; color: #666;">
-                {label}
-            </div>
-            <div style="font-size: 1.5rem; font-weight: bold; color: #2c3e50;">
-                {value}{unit}
-            </div>
+    st.markdown(f"""
+    <div style="
+        padding: 1rem;
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin: 0.5rem 0;
+        border: 2px solid #e0e0e0;
+    ">
+        <div style="font-size: 0.9rem; color: #666;">
+            {label}
         </div>
-        """, unsafe_allow_html=True)
+        <div style="font-size: 1.5rem; font-weight: bold; color: #2c3e50;">
+            {value}{unit}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # --------------------------
 # Main Interface
@@ -113,12 +110,12 @@ st.markdown("""
     background: #f8f9fa;
 }
 
-.st-emotion-cache-1kyxreq {
-    justify-content: center;
+[data-testid="stVerticalBlock"] {
+    gap: 1rem;
 }
 
 .st-emotion-cache-1v0mbdj {
-    border-radius: 15px;
+    border-radius: 15px !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -139,11 +136,14 @@ if uploaded_file:
         with st.spinner("🔍 Analyzing your meal..."):
             analysis = analyze_food(uploaded_file)
             if analysis and 'analysis' in analysis:
+                # Convert datetime for SQLite
+                timestamp = datetime.now().isoformat()
+                
                 # Save analysis
                 c.execute('''INSERT INTO meals 
                           (id, timestamp, image, analysis)
                           VALUES (?, ?, ?, ?)''',
-                        (str(datetime.now()), datetime.now(),
+                        (str(timestamp), timestamp,
                          uploaded_file.getvalue(), json.dumps(analysis)))
                 conn.commit()
 
@@ -194,3 +194,5 @@ if uploaded_file:
                     for suggestion in analysis['analysis'].get('alternative_suggestions', []):
                         st.markdown(f"- {suggestion}")
 
+# Close database connection
+conn.close()
