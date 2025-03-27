@@ -1,298 +1,279 @@
 """
-NUTRISCALE PLATFORM - Enterprise-Grade Nutritional Intelligence System
-Architecture:
-- Microservices backend
-- React frontend (Streamlit for prototype)
-- AI Orchestration Layer
-- Payment Gateway Integration
-- Mobile-ready design
+NUTRISCALE PRO - AI-Powered Nutrition Analysis Platform
 """
 
-# --------------------------
-# 1. Backend Service (FastAPI)
-# --------------------------
-# File: backend/main.py
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine, Column, String, JSON, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
-import logging
-import uuid
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("nutriverse")
-
-# Database setup
-SQLALCHEMY_DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/nutriverse"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(String, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    plan = Column(String, default="free")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    meal_history = Column(JSON)
-
-class MealAnalysis(Base):
-    __tablename__ = "meals"
-    id = Column(String, primary_key=True, index=True)
-    user_id = Column(String)
-    analysis = Column(JSON)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-Base.metadata.create_all(bind=engine)
-
-# --------------------------
-# 2. AI Service Layer
-# --------------------------
-# File: services/ai_processor.py
+import streamlit as st
 import google.generativeai as genai
-from PIL import Image
 import requests
+import sqlite3
 import json
+import uuid
+from datetime import datetime
+from PIL import Image
+import pandas as pd
+import plotly.express as px
+import hashlib
+import os
 
+# ======================
+# Configuration Layer
+# ======================
+class AppConfig:
+    def __init__(self):
+        self.gemini_key = st.secrets["GEMINI_API_KEY"]
+        self.nutritionix_id = st.secrets["NUTRITIONIX_APP_ID"]
+        self.nutritionix_key = st.secrets["NUTRITIONIX_API_KEY"]
+        self.db_path = "nutriverse.db"
+        self.analytics_enabled = True
+
+config = AppConfig()
+
+# ======================
+# Database Layer
+# ======================
+class DatabaseManager:
+    def __init__(self):
+        self.conn = sqlite3.connect(config.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self._init_db()
+    
+    def _init_db(self):
+        with self.conn:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    session_token TEXT,
+                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    plan_level INTEGER DEFAULT 0
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS analyses (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    timestamp TIMESTAMP,
+                    image_hash TEXT,
+                    analysis_json TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+            """)
+    
+    def create_user_session(self):
+        user_id = str(uuid.uuid4())
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO users (id) VALUES (?)",
+                (user_id,)
+            )
+        return user_id
+    
+    def save_analysis(self, user_id, image, analysis):
+        image_hash = hashlib.sha256(image.getvalue()).hexdigest()
+        analysis_id = str(uuid.uuid4())
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO analyses 
+                (id, user_id, timestamp, image_hash, analysis_json)
+                VALUES (?, ?, ?, ?, ?)""",
+                (analysis_id, user_id, datetime.now(), image_hash, json.dumps(analysis))
+            )
+        return analysis_id
+
+# ======================
+# AI Service Layer
+# ======================
 class NutritionAI:
     def __init__(self):
-        self.gemini = genai.GenerativeModel('gemini-1.5-pro')
-        self.nutritionix_config = {
-            "app_id": st.secrets["NUTRITIONIX_APP_ID"],
-            "app_key": st.secrets["NUTRITIONIX_API_KEY"]
-        }
-
-    async def analyze_meal(self, image: bytes):
+        genai.configure(api_key=config.gemini_key)
+        self.model = genai.GenerativeModel('gemini-1.5-pro')
+    
+    def analyze_image(self, image):
         try:
-            # Advanced image analysis
-            response = self.gemini.generate_content([
-                "Perform comprehensive nutritional analysis:",
-                "- Food identification",
-                "- Portion estimation",
-                "- Allergy detection",
-                "- Meal scoring (0-100)",
-                "- Cultural context",
-                "- Sustainability impact",
+            response = self.model.generate_content([
+                self._build_prompt(),
                 Image.open(image)
             ])
             return self._parse_response(response.text)
-        
         except Exception as e:
-            logger.error(f"AI Analysis Failed: {str(e)}")
-            raise
-
-    def _parse_response(self, text: str):
-        # Implement advanced parsing with validation
-        pass
-
-# --------------------------
-# 3. Frontend (Streamlit Premium UI)
-# --------------------------
-# File: frontend/app.py
-import streamlit as st
-import httpx
-from datetime import datetime
-import plotly.express as px
-import time
-
-# Configuration
-API_ENDPOINT = "https://api.nutriverse.io/v1"
-PREMIUM_FEATURES = ["AI Chef", "Meal Planner", "Health Tracking"]
-
-# Auth Service
-class AuthManager:
-    def __init__(self):
-        self.token = None
+            st.error(f"AI Analysis Error: {str(e)}")
+            return None
     
-    def login(self, email, password):
-        # OAuth2 implementation
-        pass
-
-# UI Components
-class PremiumUI:
-    def dashboard_header(self):
-        st.markdown("""
-        <style>
-        .dashboard-header {
-            background: linear-gradient(135deg, #6366f1, #8b5cf6);
-            padding: 2rem;
-            border-radius: 1rem;
-            color: white;
-        }
-        </style>
-        <div class="dashboard-header">
-            <h1>Your Nutritional Intelligence Hub</h1>
-        </div>
-        """, unsafe_allow_html=True)
+    def _build_prompt(self):
+        return """Analyze this food image and output JSON with:
+        - main_dish: {name, cultural_origin}
+        - ingredients: [{name, quantity, unit}]
+        - nutrition: {calories, protein, carbs, fat, vitamins}
+        - health_metrics: {score (0-100), allergens}
+        - sustainability: {carbon_footprint, alternatives}
+        """
     
-    def analysis_animation(self):
-        with st.spinner(""):
-            st.markdown("""
-            <div class="scan-animation">
-                <div class="scanner"></div>
-            </div>
-            <style>
-            .scan-animation {
-                height: 4px;
-                background: #e0e7ff;
-                position: relative;
-                overflow: hidden;
-                border-radius: 2px;
-            }
-            .scanner {
-                width: 50%;
-                height: 100%;
-                background: #4f46e5;
-                animation: scan 2s infinite;
-                position: absolute;
-            }
-            @keyframes scan {
-                0% { left: -50%; }
-                100% { left: 100%; }
-            }
-            </style>
-            """, unsafe_allow_html=True)
-
-# --------------------------
-# 4. Payment Integration
-# --------------------------
-# File: services/payment_processor.py
-import stripe
-from fastapi import HTTPException
-
-class PaymentManager:
-    def __init__(self):
-        self.stripe = stripe
-        self.stripe.api_key = st.secrets["STRIPE_KEY"]
-    
-    def create_subscription(self, user_id, plan):
+    def _parse_response(self, text):
+        cleaned = text.replace('```json', '').replace('```', '').strip()
         try:
-            # Implement 3D Secure payment flow
-            pass
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            st.error("Failed to parse AI response")
+            return None
+
+# ======================
+# Nutrition API Layer
+# ======================
+class NutritionAPI:
+    def __init__(self):
+        self.headers = {
+            "x-app-id": config.nutritionix_id,
+            "x-app-key": config.nutritionix_key,
+            "Content-Type": "application/json"
+        }
+    
+    def get_detailed_nutrition(self, item):
+        try:
+            response = requests.post(
+                "https://trackapi.nutritionix.com/v2/natural/nutrients",
+                headers=self.headers,
+                json={"query": f"{item['quantity']}{item['unit']} {item['name']}"}
+            )
+            return response.json().get('foods', [{}])[0] if response.ok else {}
         except Exception as e:
-            logger.error(f"Payment Failed: {str(e)}")
-            raise
+            st.error(f"Nutrition API Error: {str(e)}")
+            return {}
 
-# --------------------------
-# 5. Mobile Optimization
-# --------------------------
-# File: frontend/mobile.py
-class MobileAdapter:
-    def responsive_grid(self):
-        # Implement dynamic grid based on screen size
-        pass
-
-    def touch_friendly(self):
+# ======================
+# Presentation Layer
+# ======================
+class NutritionDashboard:
+    def __init__(self):
+        self._load_assets()
+    
+    def _load_assets(self):
         st.markdown("""
         <style>
-        .stButton>button {
-            padding: 1rem !important;
-            border-radius: 0.5rem !important;
+        .main {
+            background: #f8fafc;
+        }
+        .food-card {
+            border-radius: 15px;
+            padding: 2rem;
+            background: white;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            margin: 1rem 0;
+        }
+        .metric-badge {
+            padding: 1rem;
+            border-radius: 8px;
+            background: #f1f5f9;
+            text-align: center;
         }
         </style>
         """, unsafe_allow_html=True)
-
-# --------------------------
-# 6. Advanced Features
-# --------------------------
-class PremiumFeatures:
-    def ai_chef(self):
-        # Implement personalized meal generator
-        pass
     
-    def health_timeline(self):
-        # Implement interactive health timeline
-        pass
+    def show_analysis(self, analysis, nutrition_data):
+        with st.container():
+            # Header Section
+            st.subheader(f"🍴 {analysis.get('main_dish', {}).get('name', 'Unknown Dish')}")
+            st.caption(f"Cuisine: {analysis.get('main_dish', {}).get('cultural_origin', '')}")
+            
+            # Health Metrics
+            cols = st.columns(3)
+            health_score = analysis.get('health_metrics', {}).get('score', 0)
+            cols[0].metric("Health Score", f"{health_score}/100")
+            cols[1].metric("Calories", sum(item.get('nf_calories', 0) for item in nutrition_data))
+            cols[2].metric("Allergens", ", ".join(analysis.get('health_metrics', {}).get('allergens', [])) or "None")
+            
+            # Nutrition Visualization
+            with st.expander("📊 Detailed Nutrition Analysis", expanded=True):
+                tab1, tab2 = st.tabs(["Macronutrients", "Micronutrients"])
+                
+                with tab1:
+                    self._show_macros(nutrition_data)
+                
+                with tab2:
+                    self._show_micros(nutrition_data)
+            
+            # Sustainability
+            with st.container():
+                st.subheader("🌱 Sustainability Impact")
+                sustainability = analysis.get('sustainability', {})
+                cols = st.columns(2)
+                cols[0].metric("Carbon Footprint", f"{sustainability.get('carbon_footprint', 0)}g CO2")
+                cols[1].metric("Eco Alternatives", len(sustainability.get('alternatives', [])))
+                
+                if sustainability.get('alternatives'):
+                    st.write("**Sustainable Swaps:**")
+                    for alt in sustainability['alternatives']:
+                        st.write(f"- {alt}")
     
-    def social_sharing(self):
-        # Implement social media integration
-        pass
-
-# --------------------------
-# 7. Deployment Setup
-# --------------------------
-# Dockerfile
-"""
-FROM python:3.12-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
-"""
-
-# CI/CD Pipeline (GitHub Actions)
-"""
-name: Deploy Nutriverse
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker Image
-        run: docker build -t nutriverse .
-      - name: Deploy to AWS ECS
-        run: |
-          aws ecs update-service \
-            --cluster nutriverse-cluster \
-            --service nutriverse-service \
-            --force-new-deployment
-"""
-
-# --------------------------
-# 8. Security Layer
-# --------------------------
-# File: security/vault.py
-from cryptography.fernet import Fernet
-
-class SecurityVault:
-    def __init__(self):
-        self.key = Fernet.generate_key()
-        self.cipher = Fernet(self.key)
+    def _show_macros(self, data):
+        df = pd.DataFrame({
+            'Macro': ['Protein', 'Carbs', 'Fat'],
+            'Grams': [
+                sum(item.get('nf_protein', 0) for item in data),
+                sum(item.get('nf_total_carbohydrate', 0) for item in data),
+                sum(item.get('nf_total_fat', 0) for item in data)
+            ]
+        })
+        fig = px.pie(df, values='Grams', names='Macro', hole=0.4)
+        st.plotly_chart(fig, use_container_width=True)
     
-    def encrypt_data(self, data):
-        return self.cipher.encrypt(data.encode())
+    def _show_micros(self, data):
+        micros = {
+            'Calcium': sum(item.get('nf_calcium_dv', 0) for item in data),
+            'Iron': sum(item.get('nf_iron_dv', 0) for item in data),
+            'Potassium': sum(item.get('nf_potassium', 0) for item in data),
+            'Vitamin C': sum(item.get('nf_vitamin_c_dv', 0) for item in data)
+        }
+        st.bar_chart(micros)
+
+# ======================
+# Application Core
+# ======================
+def main():
+    # Initialize services
+    db = DatabaseManager()
+    ai = NutritionAI()
+    nutrition_api = NutritionAPI()
+    ui = NutritionDashboard()
     
-    def decrypt_data(self, token):
-        return self.cipher.decrypt(token).decode()
-
-# --------------------------
-# 9. Analytics Engine
-# --------------------------
-# File: analytics/processor.py
-class UserAnalytics:
-    def track_engagement(self):
-        # Implement Mixpanel/Amplitude integration
-        pass
+    # User Session Management
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = db.create_user_session()
     
-    def nutritional_insights(self):
-        # Implement ML-powered insights
-        pass
+    # App Interface
+    st.set_page_config(
+        page_title="Nutriverse Pro",
+        page_icon="🥗",
+        layout="wide"
+    )
+    
+    st.title("🍎 Nutriverse - AI Nutrition Analyst")
+    uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "png", "jpeg"])
+    
+    if uploaded_file:
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.image(uploaded_file, use_container_width=True)
+        
+        with col2:
+            with st.spinner("🔍 Analyzing nutritional composition..."):
+                # AI Analysis
+                analysis = ai.analyze_image(uploaded_file)
+                
+                if analysis:
+                    # Nutrition API Data
+                    nutrition_data = [
+                        nutrition_api.get_detailed_nutrition(item)
+                        for item in analysis.get('ingredients', [])
+                    ]
+                    
+                    # Save to Database
+                    db.save_analysis(
+                        st.session_state.user_id,
+                        uploaded_file,
+                        analysis
+                    )
+                    
+                    # Display Results
+                    ui.show_analysis(analysis, nutrition_data)
 
-# --------------------------
-# 10. Testing Suite
-# --------------------------
-# File: tests/test_integration.py
-import pytest
-from unittest.mock import Mock
-
-@pytest.fixture
-def mock_ai():
-    return Mock()
-
-def test_meal_analysis(mock_ai):
-    # Implement comprehensive test suite
-    pass
+if __name__ == "__main__":
+    main()
