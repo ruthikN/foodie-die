@@ -33,39 +33,65 @@ c.execute('''CREATE TABLE IF NOT EXISTS meals
 # Core Functions
 # --------------------------
 def clean_and_parse(response_text):
+    """Cleans and parses AI response to valid JSON."""
     try:
         cleaned = response_text.replace('```json', '').replace('```', '').strip()
+        
+        # Debugging: Show raw response in Streamlit
+        st.write("🔍 Raw AI Response:", cleaned) 
+        
+        if not cleaned.startswith("{") or not cleaned.endswith("}"):
+            st.error("Invalid JSON format received! Please try again.")
+            return None
+        
         return json.loads(cleaned)
-    except Exception as e:
-        st.error(f"Parsing error: {str(e)}")
+    except json.JSONDecodeError as e:
+        st.error(f"❌ Parsing error: {str(e)} - Check JSON structure")
         return None
 
 def analyze_food(image):
+    """Uses Gemini AI to analyze food images and return structured data."""
     model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = """Analyze this food image and return JSON with:
-    - main_food: primary food name
-    - items: list of {name, quantity, unit}
-    - health_rating: 1-5 scale
-    - alternative_suggestions: [healthier options]
-    Format: {analysis: {...}}"""
     
+    prompt = """Analyze this food image and return a well-formatted JSON object.
+    Ensure proper JSON syntax and include:
+    {
+        "analysis": {
+            "main_food": "string - primary food name",
+            "items": [{"name": "string", "quantity": "number", "unit": "string"}],
+            "health_rating": "integer (1-5)",
+            "alternative_suggestions": ["list of healthy alternatives"]
+        }
+    }
+    """
+
     try:
         response = model.generate_content([prompt, Image.open(image)])
+
+        # Debugging: Show Gemini response in Streamlit
+        st.write("🧠 AI Response:", response.text)
+        
         return clean_and_parse(response.text)
     except Exception as e:
-        st.error(f"Analysis failed: {str(e)}")
+        st.error(f"🚨 Analysis failed: {str(e)}")
         return None
 
 def get_nutrition_data(item):
+    """Fetches nutritional data using Nutritionix API."""
     try:
         response = requests.post(
             "https://trackapi.nutritionix.com/v2/natural/nutrients",
             headers=NUTRITIONIX_HEADERS,
             json={"query": f"{item['quantity']}{item['unit']} {item['name']}"}
         )
-        return response.json().get('foods', [{}])[0] if response.ok else {}
+        
+        if response.ok:
+            return response.json().get('foods', [{}])[0]
+        else:
+            st.error(f"⚠️ Nutrition API error: {response.status_code}")
+            return {}
     except Exception as e:
-        st.error(f"Nutrition API error: {str(e)}")
+        st.error(f"❌ Nutrition API error: {str(e)}")
         return {}
 
 # --------------------------
@@ -109,11 +135,9 @@ st.markdown("""
 [data-testid="stAppViewContainer"] {
     background: #f8f9fa;
 }
-
 [data-testid="stVerticalBlock"] {
     gap: 1rem;
 }
-
 .st-emotion-cache-1v0mbdj {
     border-radius: 15px !important;
 }
